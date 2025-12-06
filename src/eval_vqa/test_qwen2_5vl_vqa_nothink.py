@@ -1,5 +1,7 @@
+import os
 import argparse
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from utils import pushd
 
 from qwen_vl_utils import process_vision_info
 import torch
@@ -13,6 +15,7 @@ parser.add_argument("--model_path", type=str, required=True, help="Path to the m
 parser.add_argument("--batch_size", type=int, required=True, help="Batch size for inference")
 parser.add_argument("--output_path", type=str, required=True, help="Path to save output JSON")
 parser.add_argument("--prompt_path", type=str, required=True, help="Path to the JSON file containing prompts")
+parser.add_argument("--image_folder", type=str, required=True, help="Path to the folder containing images")
 args = parser.parse_args()
 
 # 使用传入的参数
@@ -20,7 +23,7 @@ MODEL_PATH = args.model_path
 BSZ = args.batch_size
 OUTPUT_PATH = args.output_path
 PROMPT_PATH = args.prompt_path
-
+IMAGE_FOLDER = args.image_folder
 #We recommend enabling flash_attention_2 for better acceleration and memory saving, especially in multi-image and video scenarios.
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     MODEL_PATH,
@@ -69,34 +72,35 @@ for i in data:
 all_outputs = []  # List to store all answers
 
 # Process data in batches
-for i in tqdm(range(0, len(messages), BSZ)):
-    batch_messages = messages[i:i + BSZ]
-    
-    # Preparation for inference
-    text = [processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) for msg in batch_messages]
-    
-    image_inputs, video_inputs = process_vision_info(batch_messages)
-    inputs = processor(
-        text=text,
-        images=image_inputs,
-        videos=video_inputs,
-        padding=True,
-        return_tensors="pt",
-    )
-    inputs = inputs.to("cuda")
+with pushd(IMAGE_FOLDER):
+    for i in tqdm(range(0, len(messages), BSZ)):
+        batch_messages = messages[i:i + BSZ]
+        
+        # Preparation for inference
+        text = [processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) for msg in batch_messages]
+        
+        image_inputs, video_inputs = process_vision_info(batch_messages)
+        inputs = processor(
+            text=text,
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to("cuda")
 
-    # Inference: Generation of the output
-    generated_ids = model.generate(**inputs, use_cache=True, max_new_tokens=256, do_sample=False)
-    
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    batch_output_text = processor.batch_decode(
-        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-    )
-    
-    all_outputs.extend(batch_output_text)
-    print(f"Processed batch {i//BSZ + 1}/{(len(messages) + BSZ - 1)//BSZ}")
+        # Inference: Generation of the output
+        generated_ids = model.generate(**inputs, use_cache=True, max_new_tokens=256, do_sample=False)
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        batch_output_text = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        
+        all_outputs.extend(batch_output_text)
+        print(f"Processed batch {i//BSZ + 1}/{(len(messages) + BSZ - 1)//BSZ}")
 
 
 # def extract_number_answer(output_str):
@@ -155,6 +159,8 @@ print(f"\nAccuracy: {accuracy:.2f}%")
 
 # Save results to a JSON file
 output_path = OUTPUT_PATH
+if not os.path.exists(os.path.dirname(output_path)):
+    os.makedirs(os.path.dirname(output_path))
 with open(output_path, "w") as f:
     json.dump({
         'accuracy': accuracy,

@@ -420,6 +420,14 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Decode the generated completions
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+        # DEBUG
+        # print(f"prompts_text: {prompts_text}")
+        # print(f"number of tokens in prompt: {len(prompt_ids)}")
+        # print(f"max prompt length: {self.max_prompt_length}")
+        # print(f"completions: {completions}")
+        # print(f"number of completions: {len(completion_ids)}")
+        # print(f"max completion length: {self.max_completion_length}")
+        # import pdb; pdb.set_trace()
         if is_conversational(inputs[0]):
             completions = [[{"role": "assistant", "content": completion}] for completion in completions]
 
