@@ -1,0 +1,13 @@
+{
+    "python.defaultInterpreterPath": "/home/fayang/.conda/envs/med-r1/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "python.condaPath": "conda",
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src/r1-v/src"
+    ],
+    "python.analysis.autoImportCompletions": true,
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true
+}
