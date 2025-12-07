@@ -1,0 +1,4 @@
+trl
+peft
+wandb
+deepspeed

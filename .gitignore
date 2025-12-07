@@ -1,2 +1,4 @@
 src/r1-v/debug_log_2b.txt
 __pycache__/
+wandb/
+gold-model/
