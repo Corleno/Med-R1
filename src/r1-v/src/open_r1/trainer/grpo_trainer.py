@@ -34,6 +34,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    Qwen3VLForConditionalGeneration,
     Trainer,
     TrainerCallback,
     is_wandb_available,
@@ -194,6 +195,9 @@ class Qwen2VLGRPOTrainer(Trainer):
             elif "Aria" in model_id:
                 model_init_kwargs.pop("use_cache")
                 model = AriaForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
+            elif "Qwen3-VL" in model_id:
+                model_init_kwargs.pop("use_cache")
+                model = Qwen3VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
             else:
                 model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
         else:
@@ -216,6 +220,8 @@ class Qwen2VLGRPOTrainer(Trainer):
                 self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             elif "Aria" in model_id:
                 self.ref_model = AriaForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
+            elif "Qwen3-VL" in model_id:
+                self.ref_model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             else:
                 self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
         elif peft_config is None:
@@ -228,12 +234,12 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id or "Aria" in model_id:
+            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id or "Aria" in model_id or "Qwen3-VL" in model_id:
                 processing_class = AutoProcessor.from_pretrained(model_id)
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
-                if "Qwen" in model_id or "Qwen2.5-VL" in model_id:
+                if "Qwen" in model_id or "Qwen2.5-VL" in model_id or "Qwen3-VL" in model_id:
                     processing_class.image_processor.max_pixels = max_pixels
                     processing_class.image_processor.min_pixels = min_pixels
             else:
