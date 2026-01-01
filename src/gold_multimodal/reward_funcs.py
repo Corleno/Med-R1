@@ -48,7 +48,15 @@ def accuracy_reward(completions, solutions, **kwargs):
 
 
 def format_reward(completions, pattern=None, **kwargs):
-    """Reward function that checks if the completion has a specific format."""
+    """Reward function that checks if the completion has a specific format.
+    Args:
+        completions: List of completions to check.
+        pattern: Pattern to check the completion against and the default pattern is non-thinking format.
+        For non-thinking format, the pattern is r"<think>.*?</think>\s*<answer>.*?</answer>".
+        For thinking format, the pattern is r"<think>.*?</think>\s*<answer>.*?</answer>".
+    Returns:
+        List of rewards.
+    """
     if pattern is None:
         pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
     matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completions]
