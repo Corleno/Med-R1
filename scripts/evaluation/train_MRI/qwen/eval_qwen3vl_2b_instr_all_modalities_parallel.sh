@@ -5,9 +5,6 @@
 # Testing: 8 modalities × 300 samples each
 # Each GPU processes 2 modalities
 
-# Ensure using med-r1-v0 environment Python
-export PATH="/home/fayang/.conda/envs/med-r1-v0/bin:$PATH"
-
 # Model configuration
 MODEL_PATH="Qwen/Qwen3-VL-2B-Instruct"
 MODEL_NAME="Qwen3VL_2B_Instr"
@@ -162,7 +159,7 @@ evaluate_modality() {
 # Export function for parallel execution
 export -f evaluate_modality
 export -f check_result_complete
-export PATH MODEL_PATH MODEL_NAME BATCH_SIZE MODE BASE_OUTPUT_DIR EVAL_JSON_DIR IMAGE_FOLDER EVAL_SCRIPT
+export MODEL_PATH MODEL_NAME BATCH_SIZE MODE BASE_OUTPUT_DIR EVAL_JSON_DIR IMAGE_FOLDER EVAL_SCRIPT
 
 # Run evaluations: parallel across GPUs, serial within each GPU
 # Group modalities by GPU to avoid memory conflicts
@@ -210,7 +207,7 @@ run_gpu_tasks() {
 export -f run_gpu_tasks
 export -f evaluate_modality
 export -f check_result_complete
-export PATH MODEL_PATH MODEL_NAME BATCH_SIZE MODE BASE_OUTPUT_DIR EVAL_JSON_DIR IMAGE_FOLDER EVAL_SCRIPT
+export MODEL_PATH MODEL_NAME BATCH_SIZE MODE BASE_OUTPUT_DIR EVAL_JSON_DIR IMAGE_FOLDER EVAL_SCRIPT
 
 # Run tasks for each GPU in parallel (background)
 PIDS=()

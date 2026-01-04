@@ -21,9 +21,6 @@ fi
 SELECTED_MODALITY="$1"
 GPU_ID="${2:-}"  # Optional GPU ID, empty means auto
 
-# Ensure using med-r1-v0 environment Python
-export PATH="/home/fayang/.conda/envs/med-r1-v0/bin:$PATH"
-
 # Model configuration
 MODEL_PATH="Qwen/Qwen3-VL-2B-Instruct"  # Can use HF Hub path or local path
 MODEL_NAME="Qwen3VL_2B_Instr"
@@ -31,9 +28,9 @@ BATCH_SIZE=16  # Reduced from 32 to prevent OOM
 MODE="nothink"  # "nothink" or "think"
 
 # Paths
-BASE_OUTPUT_DIR="/home/fayang/output/Med-R1/evaluation/modality/train_MRI/qwen/${MODEL_NAME}"
-EVAL_JSON_DIR="/data/datasets/OmniMedVQA/radiology_sampled/eval_json"
-IMAGE_FOLDER="/data/datasets/OmniMedVQA/OmniMedVQA"
+BASE_OUTPUT_DIR="/mnt/task_runtime/results/${MODEL_NAME}"
+EVAL_JSON_DIR="/mnt/task_runtime/data/omni_med_vqa_processed_sampled/eval_json"
+IMAGE_FOLDER="/mnt/task_runtime/data//OmniMedVQA/OmniMedVQA"
 
 # Modality mapping: (modality_name, json_filename)
 declare -A MODALITY_TO_JSON
