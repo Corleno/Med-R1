@@ -11,3 +11,4 @@ torchaudio==2.8.0+cu128
 vllm>=0.10.0,<=0.11.2
 # flash-attn prebuilt wheel for CUDA 12.8, torch 2.8, Python 3.10
 https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.2/flash_attn-2.8.3%2Bcu128torch2.8-cp310-cp310-linux_x86_64.whl
+qwen_vl_utils
