@@ -78,6 +78,7 @@ from trl import (
 from .gold_multimodal_config import GOLDMultimodalConfig, GOLDMultimodalScriptArguments
 from .gold_multimodal_trainer import GOLDMultimodalTrainer
 from .reward_funcs import accuracy_reward, format_reward
+from .prompt import VQA_PROMPT, VQA_THINKING_PROMPT
 
 if __name__ == "__main__":
     parser = TrlParser((GOLDMultimodalScriptArguments, GOLDMultimodalConfig, ModelConfig))
@@ -132,14 +133,16 @@ if __name__ == "__main__":
     
     if training_args.dataset_type == "vqa" or training_args.dataset_type == "vqa_thinking":
         if training_args.dataset_type == "vqa":
-            QUESTION_TEMPLATE = "{Question} Your task: 1. Provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. 2. No extra information or text outside of this tag."
-        
+            # QUESTION_TEMPLATE = "{Question} Your task: 1. Provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. 2. No extra information or text outside of this tag."
+            QUESTION_TEMPLATE = "{Question} " + VQA_PROMPT
+
             reward_funcs_registry = {
                 "accuracy": accuracy_reward,
                 "format": partial(format_reward, pattern=r"<answer>.*?</answer>"),
             }
         else:
-            QUESTION_TEMPLATE = "{Question} Your task: 1. Think through the question step by step, enclose your reasoning process in <think>...</think> tags. 2. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. 3. No extra information or text outside of these tags."
+            # QUESTION_TEMPLATE = "{Question} Your task: 1. Think through the question step by step, enclose your reasoning process in <think>...</think> tags. 2. Then provide the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags. 3. No extra information or text outside of these tags."
+            QUESTION_TEMPLATE = "{Question} " + VQA_THINKING_PROMPT
 
             reward_funcs_registry = {
                 "accuracy": accuracy_reward,

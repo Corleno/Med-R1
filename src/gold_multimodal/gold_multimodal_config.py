@@ -55,3 +55,6 @@ class GOLDMultimodalConfig(GOLDConfig):
 
     # Number of generations to sample for GPRO.
     num_generations: int = 8
+
+    # Number of knowledge enhancement samples to generate
+    num_knowledge_enhancement: int = 0

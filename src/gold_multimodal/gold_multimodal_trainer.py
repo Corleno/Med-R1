@@ -63,6 +63,7 @@ from trl.trainer.utils import (
     pad,
 )
 from .gold_multimodal_config import GOLDMultimodalConfig
+from .prompt import VQA_THINKING_PROMPT, HINT_PROMPT
 
 
 @dataclass
@@ -1098,6 +1099,7 @@ class GOLDMultimodalTrainer(SFTTrainer):
         self.temperature = args.temperature
         self.top_p = args.top_p
         self.seq_kd = args.seq_kd
+        self.num_knowledge_enhancement = args.num_knowledge_enhancement
 
         # Track per-step loss statistics for on/off-policy batches (used in logging)
         self._on_policy_loss_total = 0.0
@@ -2039,6 +2041,46 @@ class GOLDMultimodalTrainer(SFTTrainer):
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)
 
+    def _hint_sampling(self, inputs, accelerator=None, generate_on_policy_outputs=None, generation_config=None, processing_class=None):
+        if accelerator is None:
+            accelerator = self.accelerator
+        if generate_on_policy_outputs is None:
+            generate_on_policy_outputs = self.generate_on_policy_outputs
+        if generation_config is None:
+            generation_config = self.generation_config
+        if processing_class is None:
+            processing_class = self.processing_class
+
+        prompt_ids = inputs["prompts"]
+        # get the prompt text
+        prompt_texts = processing_class.batch_decode(prompt_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+        # replace the orginal task by the specified task
+        hint_prompt_texts = [prompt_text.replace(VQA_THINKING_PROMPT, HINT_PROMPT).format(answer=solution) for prompt_text, solution in zip(prompt_texts, inputs["solutions"])]
+        hint_prompt = processing_class.batch_encode_plus(hint_prompt_texts, return_tensors="pt", padding="longest", truncation=True, add_special_tokens=False)
+        hint_prompt_ids = hint_prompt["input_ids"]
+        hint_attention_mask = hint_prompt["attention_mask"]
+        hint_labels = hint_prompt["labels"]
+
+
+        with unwrap_model_for_generation(self.teacher_model, accelerator) as unwrapped_teacher_model:
+            result = unwrapped_teacher_model.generate(
+                input_ids=hint_prompt_ids, 
+                pixel_values=inputs["pixel_values"],
+                image_grid_thw=inputs["image_grid_thw"],
+                attention_mask=hint_attention_mask,
+                generation_config=generation_config,
+                return_dict_in_generate=True,
+            )
+            hint_completion_ids = result.sequences
+            hint_completion_texts = processing_class.batch_decode(hint_completion_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+        return hint_input_ids, hint_attention_mask, hint_labels, hint_prompt_texts, hint_completion_texts
+    
     def _on_policy_sampling(self, model, inputs, accelerator=None, generate_on_policy_outputs=None, generation_config=None, processing_class=None):
         
         if accelerator is None:
@@ -2112,6 +2154,11 @@ class GOLDMultimodalTrainer(SFTTrainer):
             prompt_ids = inputs["prompts"]
             prompt_length = prompt_ids.size(1)
             num_generations = self.generation_rl_config.num_return_sequences
+
+            if self.num_knowledge_enhancement > 0:
+                # get the hint for the knowledge enhancement
+                hint_input_ids, hint_attention_mask, hint_labels, hint_prompt_texts, hint_completion_texts = self._hint_sampling(inputs, generation_config = self.generation_rl_config)
+
 
             # Repeat the prompts for each generation
             new_prompts = prompt_ids.repeat_interleave(num_generations, dim=0)
