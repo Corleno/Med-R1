@@ -20,6 +20,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any, Optional, Union
+import re
 
 import torch
 import torch.distributed as dist
@@ -63,7 +64,7 @@ from trl.trainer.utils import (
     pad,
 )
 from .gold_multimodal_config import GOLDMultimodalConfig
-from .prompt import VQA_THINKING_PROMPT, HINT_PROMPT
+from .prompt import VQA_THINKING_PROMPT, HINT_PROMPT, HINT_AWARE_VQA_THINKING_PROMPT
 
 
 @dataclass
@@ -1133,6 +1134,15 @@ class GOLDMultimodalTrainer(SFTTrainer):
             pad_token_id=self.processing_class.tokenizer.pad_token_id,
         )
 
+        self.hint_generation_config = GenerationConfig(
+            max_new_tokens=args.max_completion_length,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            do_sample=True,
+            top_k=args.top_k,
+            pad_token_id=self.processing_class.tokenizer.pad_token_id,
+        )
+
         self.generation_rl_config = GenerationConfig(
             max_new_tokens=args.max_completion_length,
             temperature=args.temperature,
@@ -1615,7 +1625,25 @@ class GOLDMultimodalTrainer(SFTTrainer):
             return jsd
 
     def generate_on_policy_outputs(self, model, inputs, generation_config, pad_token_id=None):
-        # Generate output with respect to the prompt only
+        """ 
+        Generate output with respect to the prompt only
+        Args:
+            model: the model to generate the output
+            inputs: the inputs to the model, which should contain the following keys:
+                - prompts: the prompt ids
+                - prompt_attention_mask: the prompt attention mask
+                - pixel_values: the pixel values
+                - image_grid_thw: the image grid thw
+            generation_config: the generation configuration
+            pad_token_id: the pad token id
+        Returns:
+            new_input_ids: the generated input ids
+            new_attention_mask: the generated attention mask
+            new_labels: the generated labels
+            prompt_texts: the prompt texts
+            completion_texts: the completion texts
+        """
+
         if self.use_transformers_paged:
             assert False, "Paged attention is not implemented for multimodal models"
             previous_attn = self.model.config._attn_implementation
@@ -1638,7 +1666,8 @@ class GOLDMultimodalTrainer(SFTTrainer):
             completion_ids = [output.generated_tokens for output in generated_outputs.values()]
             generated_tokens = torch.stack([torch.tensor(ids, device=model.device) for ids in completion_ids])
         else:
-            num_generations = generation_config.num_return_sequences
+            # if generation_config has num_return_sequences, use it, otherwise use 1
+            num_generations = generation_config.num_return_sequences if hasattr(generation_config, "num_return_sequences") else 1
             if num_generations > 1:
                 # Flatten the first two dimensions of the pixel_values tensor.
                 pixel_values = inputs["pixel_values"].view(-1, inputs["pixel_values"].shape[-1])
@@ -2041,13 +2070,11 @@ class GOLDMultimodalTrainer(SFTTrainer):
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)
 
-    def _hint_sampling(self, inputs, accelerator=None, generate_on_policy_outputs=None, generation_config=None, processing_class=None):
+    def _hint_sampling(self, inputs, accelerator=None, generation_config=None, processing_class=None, verbose=False):
         if accelerator is None:
             accelerator = self.accelerator
-        if generate_on_policy_outputs is None:
-            generate_on_policy_outputs = self.generate_on_policy_outputs
         if generation_config is None:
-            generation_config = self.generation_config
+            generation_config = self.hint_generation_config
         if processing_class is None:
             processing_class = self.processing_class
 
@@ -2059,27 +2086,42 @@ class GOLDMultimodalTrainer(SFTTrainer):
                 )
         # replace the orginal task by the specified task
         hint_prompt_texts = [prompt_text.replace(VQA_THINKING_PROMPT, HINT_PROMPT).format(answer=solution) for prompt_text, solution in zip(prompt_texts, inputs["solutions"])]
-        hint_prompt = processing_class.batch_encode_plus(hint_prompt_texts, return_tensors="pt", padding="longest", truncation=True, add_special_tokens=False)
+        hint_prompt = processing_class.tokenizer(hint_prompt_texts, return_tensors="pt", padding="longest", truncation=True, add_special_tokens=False)
         hint_prompt_ids = hint_prompt["input_ids"]
         hint_attention_mask = hint_prompt["attention_mask"]
-        hint_labels = hint_prompt["labels"]
 
+        # move ids and attention mask to the same device as the model
+        hint_prompt_ids = hint_prompt_ids.to(accelerator.device)
+        hint_attention_mask = hint_attention_mask.to(accelerator.device)
 
         with unwrap_model_for_generation(self.teacher_model, accelerator) as unwrapped_teacher_model:
+            if inputs['pixel_values'].ndim > 2:
+                # flatten the pixel_values by merging the first two dimensions
+                pixel_values = inputs['pixel_values'].view(-1, *inputs['pixel_values'].shape[2:])
+            else:
+                pixel_values = inputs['pixel_values']
+            if verbose:
+                print(
+                    f"hint_prompt_ids shape: {hint_prompt_ids.shape}, "
+                    f"hint_attention_mask shape: {hint_attention_mask.shape}, "
+                    f"inputs['pixel_values'] shape: {inputs['pixel_values'].shape}, "
+                    f"inputs['image_grid_thw'] shape: {inputs['image_grid_thw'].shape}"
+                )
             result = unwrapped_teacher_model.generate(
                 input_ids=hint_prompt_ids, 
-                pixel_values=inputs["pixel_values"],
+                pixel_values=pixel_values,
                 image_grid_thw=inputs["image_grid_thw"],
                 attention_mask=hint_attention_mask,
                 generation_config=generation_config,
                 return_dict_in_generate=True,
             )
             hint_completion_ids = result.sequences
+            hint_completion_ids = hint_completion_ids[:, hint_prompt_ids.shape[1]:]
             hint_completion_texts = processing_class.batch_decode(hint_completion_ids,
-                    skip_special_tokens=False,
-                    clean_up_tokenization_spaces=False,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=True,
                 )
-        return hint_input_ids, hint_attention_mask, hint_labels, hint_prompt_texts, hint_completion_texts
+        return hint_prompt_texts, hint_completion_texts
     
     def _on_policy_sampling(self, model, inputs, accelerator=None, generate_on_policy_outputs=None, generation_config=None, processing_class=None):
         
@@ -2098,6 +2140,78 @@ class GOLDMultimodalTrainer(SFTTrainer):
             )
             new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts = result
         return new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts
+
+    def _rejective_sampling_with_hint(self, hint_texts, model, inputs, accelerator=None, generate_on_policy_outputs=None, generation_config=None, processing_class=None, max_attempts=1):
+        if accelerator is None:
+            accelerator = self.accelerator
+        if generate_on_policy_outputs is None:
+            generate_on_policy_outputs = self.generate_on_policy_outputs
+        if generation_config is None:
+            generation_config = self.hint_generation_config
+        if processing_class is None:
+            processing_class = self.processing_class
+
+        # update the generation config with the number of generations
+        generation_config.num_return_sequences = self.num_knowledge_enhancement if self.num_knowledge_enhancement > 0 else 1
+
+        # create the new input prompts with the hint texts
+        new_inputs = inputs.copy()
+
+        # get the original prompt text
+        prompt_ids = inputs["prompts"]
+        prompt_texts = processing_class.batch_decode(prompt_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+        # replace the orginal task by the specified task
+        hint_aware_prompt_texts = [prompt_text.replace(VQA_THINKING_PROMPT, HINT_AWARE_VQA_THINKING_PROMPT).format(hint=hint_text) for prompt_text, hint_text in zip(prompt_texts, hint_texts)]
+        
+        hint_aware_prompt = processing_class.tokenizer(hint_aware_prompt_texts, return_tensors="pt", padding="longest", padding_side="left", truncation=True, add_special_tokens=False)
+        hint_aware_prompt_ids = hint_aware_prompt["input_ids"]
+        hint_aware_attention_mask = hint_aware_prompt["attention_mask"]
+
+        # move ids and attention mask to the same device as the model
+        hint_aware_prompt_ids = hint_aware_prompt_ids.to(accelerator.device)
+        hint_aware_attention_mask = hint_aware_attention_mask.to(accelerator.device)
+
+        new_inputs["prompts"] = hint_aware_prompt_ids
+        new_inputs["prompt_attention_mask"] = hint_aware_attention_mask
+
+        # rejective sampling with the hint aware prompt texts
+        flag = False # initilize the flag to False
+        num_attempts = 0 # initialize the number of attempts to 0
+        # keep sampling until the output is valid
+        while not flag and num_attempts < max_attempts:
+            print(f"Attempt {num_attempts} of {max_attempts} to generate the hint aware completions")
+            num_attempts += 1
+            # on-policy sampling with the new inputs which has the hint aware prompt texts
+            with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
+                result = generate_on_policy_outputs(
+                    unwrapped_model, new_inputs, generation_config, processing_class.tokenizer.pad_token_id
+                )
+                new_hint_aware_input_ids, new_hint_aware_attention_mask, new_hint_aware_labels, new_hint_aware_prompt_texts, new_hint_aware_completion_texts = result
+
+            # validate the output 
+            num_samples = new_hint_aware_input_ids.shape[0]
+            rewards_per_func = self._get_rewards(num_samples, inputs, generation_config.num_return_sequences, new_hint_aware_prompt_texts, new_hint_aware_completion_texts, self.accelerator.device)
+
+            # Note: We only validate the rewards for the accuracy which is the first dimension of the rewards_per_func
+            accuracy_rewards = rewards_per_func[:, 0]
+            # check if the accuracy rewards are all 1 
+            flag = accuracy_rewards.all() == 1
+            if not flag:
+                # delete new_hint_aware_input_ids, new_hint_aware_attention_mask, new_hint_aware_labels, new_hint_aware_prompt_texts, new_hint_aware_completion_texts
+                new_hint_aware_input_ids = None
+                new_hint_aware_attention_mask = None
+                new_hint_aware_labels = None
+                new_hint_aware_prompt_texts = None
+                new_hint_aware_completion_texts = None
+
+        if flag:
+            return True, new_hint_aware_input_ids, new_hint_aware_attention_mask, new_hint_aware_labels, new_hint_aware_prompt_texts, new_hint_aware_completion_texts
+        else:
+            return False, new_hint_aware_input_ids, new_hint_aware_attention_mask, new_hint_aware_labels, new_hint_aware_prompt_texts, new_hint_aware_completion_texts
+            
 
     def _compute_on_policy_knowledge_distillation(self, inputs, model):
         """
@@ -2146,6 +2260,24 @@ class GOLDMultimodalTrainer(SFTTrainer):
         )
         return loss, outputs_student
 
+    def _get_rewards(self, num_samples, inputs, num_generations, prompt_texts, completion_texts, device):
+        # Compute the rewards
+        rewards_per_func = torch.zeros(num_samples, len(self.reward_funcs), device=device)
+
+        for i, (reward_func, reward_processing_class) in enumerate(
+            zip(self.reward_funcs, self.reward_processing_classes)
+        ):
+            if isinstance(reward_func, PreTrainedModel):
+                raise ValueError("Reward function is not supported for PreTrainedModel")
+            else:
+                reward_kwargs = {key: [example for example in inputs[key] for _ in range(num_generations)] for key in inputs.keys()}
+                prompts = self.skip_special_tokens_from_text_list(prompt_texts)
+                completions = self.skip_special_tokens_from_text_list(completion_texts)   
+                reward_kwargs["prompts"] = prompts
+                output_reward_func = reward_func(completions=completions, **reward_kwargs)
+                rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+        return rewards_per_func
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None, verbose=False):
         if self.use_rl_loss:
             assert return_outputs is False, "return_outputs must be False for RL loss"
@@ -2157,14 +2289,57 @@ class GOLDMultimodalTrainer(SFTTrainer):
 
             if self.num_knowledge_enhancement > 0:
                 # get the hint for the knowledge enhancement
-                hint_input_ids, hint_attention_mask, hint_labels, hint_prompt_texts, hint_completion_texts = self._hint_sampling(inputs, generation_config = self.generation_rl_config)
-
+                _, hint_completion_texts = self._hint_sampling(inputs, generation_config = self.hint_generation_config)
+                # extract the hint from the hint_completion_texts by extracting the content in <hint> </hint> tags
+                hint_texts = [re.search(r'<hint>(.*?)</hint>', text).group(1) for text in hint_completion_texts]
 
             # Repeat the prompts for each generation
             new_prompts = prompt_ids.repeat_interleave(num_generations, dim=0)
             # Generate completions
             new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts = self._on_policy_sampling(model, inputs, generation_config = self.generation_rl_config)
-            
+            num_samples = new_input_ids.shape[0]
+
+            if verbose:
+                print(f"original prompt_texts: {prompt_texts}")
+                print(f"original completion_texts: {completion_texts}")
+
+            if self.num_knowledge_enhancement > 0:
+                # Given the hint texts, we need to generate the new prompts and completions using rejective sampling
+                flag, new_enhanced_input_ids, new_enhanced_attention_mask, new_enhanced_labels, new_enhanced_prompt_texts, new_enhanced_completion_texts = self._rejective_sampling_with_hint(hint_texts, model, inputs, generation_config = self.hint_generation_config)
+                if flag:
+                    # get the prompt length from the new_labels by counting the number of consecutive -100s at the beginning of the new_labels
+                    prompt_length = ((new_labels[0] == -100).diff().ne(0).nonzero(as_tuple=False).flatten()[0] + 1 if (new_labels[0] == -100).any() else 0)
+                    prompt_length_enhanced = ((new_enhanced_labels[0] == -100).diff().ne(0).nonzero(as_tuple=False).flatten()[0] + 1 if (new_enhanced_labels[0] == -100).any() else 0)
+                    response_length = new_labels.shape[1] - prompt_length
+                    response_length_enhanced = new_enhanced_labels.shape[1] - prompt_length_enhanced
+
+                    if response_length_enhanced > response_length:
+                        # padding the new_input_ids, new_attention_mask, new_labels with -100s to the response length of the knowledge enhanced samples
+                        new_input_ids = torch.cat([torch.full((num_samples, response_length_enhanced - response_length), self.processing_class.tokenizer.pad_token_id, device=device), new_input_ids], dim=1)
+                        new_attention_mask = torch.cat([torch.full((num_samples, response_length_enhanced - response_length), 0, device=device), new_attention_mask], dim=1)
+                        new_labels = torch.cat([torch.full((num_samples, response_length_enhanced - response_length), -100, device=device), new_labels], dim=1)
+                    
+                    # randomly replace num_knowledge_enhancement rollout samples for each prompt with the corresponding knowledge enhanced samples
+                    for i in range(prompt_ids.shape[0]):
+                        # randomly select num_knowledge_enhancement indices from the num_generations indices
+                        indices = torch.randint(0, num_generations, (self.num_knowledge_enhancement,)) + i * num_generations
+                        indices_enhanced = [i * self.num_knowledge_enhancement + j for j in range(self.num_knowledge_enhancement)]
+                        # replace the corresponding rollout samples with the knowledge enhanced samples
+                        new_input_ids[indices, prompt_length:] = self.processing_class.tokenizer.pad_token_id
+                        new_input_ids[indices, prompt_length:prompt_length + response_length_enhanced] = new_enhanced_input_ids[indices_enhanced, prompt_length_enhanced:]
+                        new_attention_mask[indices, prompt_length:] = 0
+                        new_attention_mask[indices, prompt_length:prompt_length + response_length_enhanced] = new_enhanced_attention_mask[indices_enhanced, prompt_length_enhanced:]
+                        new_labels[indices, prompt_length:] = -100
+                        new_labels[indices, prompt_length:prompt_length + response_length_enhanced] = new_enhanced_labels[indices_enhanced, prompt_length_enhanced:]
+                        for j in range(len(indices)):
+                            completion_texts[indices[j]] = new_enhanced_completion_texts[indices_enhanced[j]]
+                else:
+                    print("Rejective sampling with hint failed. Use the original samples for the RL loss computation.")
+                
+            if verbose:
+                print(f"enhanced prompt_texts: {prompt_texts}")
+                print(f"enhanced_completion_texts: {completion_texts}")    
+                                    
             new_pixel_values = inputs["pixel_values"].repeat_interleave(num_generations, dim=0)
             new_image_grid_thw = inputs["image_grid_thw"].repeat_interleave(num_generations, dim=0)
             per_token_logps = self._get_per_token_logps(model, new_input_ids, new_attention_mask, new_pixel_values, new_image_grid_thw)
@@ -2188,31 +2363,8 @@ class GOLDMultimodalTrainer(SFTTrainer):
             # print(f"completions: {completion_texts}")
             # print(f"number of completions: {len(new_input_ids)}")
 
-            # Compute the rewards
-            rewards_per_func = torch.zeros(len(new_input_ids), len(self.reward_funcs), device=device)
-
-            for i, (reward_func, reward_processing_class) in enumerate(
-                zip(self.reward_funcs, self.reward_processing_classes)
-            ):
-                if isinstance(reward_func, PreTrainedModel):
-                    if is_conversational(inputs[0]):
-                        messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
-                        texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
-                    else:
-                        texts = [p + c for p, c in zip(prompts, completions)]
-                    reward_inputs = reward_processing_class(
-                        texts, return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False
-                    )
-                    reward_inputs = super()._prepare_inputs(reward_inputs)
-                    with torch.inference_mode():
-                        rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]  # Shape (B*G,)
-                else:
-                    reward_kwargs = {key: [example for example in inputs[key] for _ in range(num_generations)] for key in inputs.keys()}
-                    prompts = self.skip_special_tokens_from_text_list(prompt_texts)
-                    completions = self.skip_special_tokens_from_text_list(completion_texts)   
-                    reward_kwargs["prompts"] = prompts
-                    output_reward_func = reward_func(completions=completions, **reward_kwargs)
-                    rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+            # Get the rewards for the new input ids
+            rewards_per_func = self._get_rewards(num_samples, inputs, num_generations, prompt_texts, completion_texts, device)
 
             # Sum the rewards from all reward functions
             rewards = rewards_per_func.sum(dim=1)
@@ -2436,7 +2588,7 @@ class GOLDMultimodalTrainer(SFTTrainer):
                 self._off_policy_step_equiv += step_equiv
         else:
             if verbose:
-                print("Performing GPRO")
+                print("Performing Knowledge Enhanced Policy Optimization")
 
             self.use_rl_loss = True
             loss = super().training_step(model, inputs, num_items_in_batch)
