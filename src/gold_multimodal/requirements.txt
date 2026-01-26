@@ -13,3 +13,4 @@ vllm>=0.10.0,<=0.11.2
 https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.2/flash_attn-2.8.3%2Bcu128torch2.8-cp310-cp310-linux_x86_64.whl
 qwen_vl_utils
 tensorflow>=2.20.0
+matplotlib
