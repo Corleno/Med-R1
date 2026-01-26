@@ -15,7 +15,7 @@ torchrun --nproc_per_node=4 \
          --teacher_model_name_or_path Qwen/Qwen3-VL-32B-Instruct \
          --dataset_name "/mnt/task_runtime/data/omni_med_vqa_processed_sampled/open_access_sft_data_hf_modality_MRI_train_600" \
          --dataset_type vqa_thinking \
-         --learning_rate 1e-6 \
+         --learning_rate 2e-6 \
          --logging_steps 1 \
          --bf16 true \
          --per_device_train_batch_size 2 \

@@ -21,7 +21,7 @@ torchrun --nproc_per_node=4 \
          --per_device_train_batch_size 2 \
          --gradient_accumulation_steps 1 \
          --output_dir /mnt/task_runtime/output/MM-GOLD/Qwen3-VL-2B-KDPO-MRI-600-think-tau-0 \
-         --num_train_epochs 10 \
+         --num_train_epochs 1 \
          --alpha 0.0 \
          --tau 0.0 \
          --save_strategy epoch \
